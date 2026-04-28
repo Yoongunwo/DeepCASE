@@ -92,21 +92,31 @@ if __name__ == "__main__":
     events_train, context_train, label_train, mapping_train = preprocessor.text(args.file, labels=0, verbose=True)
     events_test , context_test , label_test , mapping_test  = preprocessor.text(args.test, labels=0, verbose=True)
 
-    # Ensure mappings are the same
-    mapping = np.vectorize(lambda x: mapping_test[x])
-    events_test  = mapping(events_test)
-    context_test = mapping(context_test)
-
+    # Align test mapping to train mapping
     mapping_train_inv = {v: k for k, v in mapping_train.items()}
-    for unknown in set(mapping_test.values()) - set(mapping_train_inv):
-        mapping_train_inv[unknown] = max(mapping_train_inv.values()) + 1
-    mapping = np.vectorize(lambda x: mapping_train_inv[x])
-    events_test  = mapping(events_test)
-    context_test = mapping(context_test)
 
-    events_test  = torch.Tensor(events_test ).to(torch.long)
-    context_test = torch.Tensor(context_test).to(torch.long)
+    def remap(events, context, mapping_src):
+        mapped = np.vectorize(lambda x: mapping_src[x])
+        e = mapped(events)
+        c = mapped(context)
+        for unknown in set(mapping_src.values()) - set(mapping_train_inv):
+            mapping_train_inv[unknown] = max(mapping_train_inv.values()) + 1
+        to_train = np.vectorize(lambda x: mapping_train_inv[x])
+        return torch.Tensor(to_train(e)).to(torch.long), \
+               torch.Tensor(to_train(c)).to(torch.long)
 
+    events_test, context_test = remap(events_test, context_test, mapping_test)
+
+    # Load and remap malicious (abnormal) data if provided
+    if args.malicious:
+        events_mal, context_mal, label_mal, mapping_mal = preprocessor.text(
+            args.malicious, labels=1, verbose=True,
+        )
+        events_mal, context_mal = remap(events_mal, context_mal, mapping_mal)
+        # Combine normal test + abnormal test
+        events_test  = torch.cat([events_test,  events_mal ],  dim=0)
+        context_test = torch.cat([context_test, context_mal],  dim=0)
+        label_test   = torch.cat([label_test,   label_mal  ],  dim=0)
 
     # Set to device
     events_train  = events_train .to(args.device).unsqueeze(1)
@@ -322,3 +332,23 @@ if __name__ == "__main__":
 
     print("Number of clusters: {}".format(cluster_counts.shape[0]))
     print()
+
+    ########################################################################
+    #                     Binary evaluation (HDFS)                         #
+    # Normal (label=0) → DeepCASE predicts >=0 → automated (no alert)     #
+    # Abnormal (label=1) → DeepCASE predicts <0  → flagged (human review) #
+    ########################################################################
+
+    if args.malicious:
+        y_true_binary = (label_test.cpu().numpy() > 0).astype(int)  # 0=normal, 1=abnormal
+        y_pred_binary = (pred_test < 0).astype(int)                  # 0=automated, 1=flagged
+
+        print("=" * 60)
+        print("Binary Evaluation (Normal vs Anomaly)")
+        print("=" * 60)
+        print(classification_report(
+            y_true       = y_true_binary,
+            y_pred       = y_pred_binary,
+            target_names = ['Normal', 'Anomaly'],
+            digits       = 4,
+        ))
