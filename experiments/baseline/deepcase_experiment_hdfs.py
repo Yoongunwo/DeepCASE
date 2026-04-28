@@ -7,6 +7,7 @@ import scipy as sp
 import sys
 import torch
 
+sys.path.insert(0, '../../')
 
 from deepcase                 import DeepCASE
 from deepcase.preprocessing   import Preprocessor
