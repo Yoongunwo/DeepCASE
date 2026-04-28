@@ -1,11 +1,16 @@
 from sklearn.metrics import classification_report
 import numpy as np
+import os
 import pandas as pd
 import torch
 
 from deepcase.preprocessing   import Preprocessor
 from deepcase.context_builder import ContextBuilder
 from deepcase.interpreter     import Interpreter
+
+MODEL_DIR            = 'model/hdfs'
+CONTEXT_BUILDER_PATH = os.path.join(MODEL_DIR, 'context_builder.pt')
+INTERPRETER_PATH     = os.path.join(MODEL_DIR, 'interpreter.pkl')
 
 
 def load_text_to_df(path, machine_offset=0, label=None, nrows=None):
@@ -140,6 +145,15 @@ if __name__ == "__main__":
         NO_SCORE   = -1,
         verbose    = True,
     )
+
+    ########################################################################
+    #                           Saving models                             #
+    ########################################################################
+
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    context_builder.save(CONTEXT_BUILDER_PATH)
+    interpreter.save(INTERPRETER_PATH)
+    print(f"Models saved to {MODEL_DIR}/")
 
     ########################################################################
     #                              Evaluation                              #
