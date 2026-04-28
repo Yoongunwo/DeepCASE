@@ -46,19 +46,19 @@ if __name__ == "__main__":
 
     # Load each split with unique machine IDs so they don't collide
     df_train = load_text_to_df(
-        path           = 'data/hdfs/hdfs_train',
+        path           = '../../Data/HDFS/logbert/train',
         machine_offset = 0,
         label          = 0,  # all normal
     )
 
     df_test_normal = load_text_to_df(
-        path           = 'data/hdfs/hdfs_test_normal',
+        path           = '../../Data/HDFS/logbert/test_normal',
         machine_offset = int(df_train['machine'].max()) + 1,
         label          = 0,
     )
 
     df_test_abnormal = load_text_to_df(
-        path           = 'data/hdfs/hdfs_test_abnormal',
+        path           = '../../Data/HDFS/logbert/test_abnormal',
         machine_offset = int(df_test_normal['machine'].max()) + 1,
         label          = 1,  # anomalous
     )

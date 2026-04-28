@@ -20,7 +20,7 @@ if __name__ == "__main__":
 
     # Load data from file
     context, events, labels, mapping = preprocessor.text(
-        path    = 'data/hdfs/hdfs_test_normal',
+        path    = '../../Data/HDFS/logbert/test_normal',
         verbose = True,
     )
 
