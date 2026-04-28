@@ -94,14 +94,16 @@ if __name__ == "__main__":
 
     # Align test mapping to train mapping
     mapping_train_inv = {v: k for k, v in mapping_train.items()}
+    # Index used for event types not seen during training (maps to NO_EVENT slot)
+    no_event_idx = mapping_train_inv[preprocessor.NO_EVENT]
 
     def remap(events, context, mapping_src):
-        mapped = np.vectorize(lambda x: mapping_src[x])
-        e = mapped(events)
-        c = mapped(context)
-        for unknown in set(mapping_src.values()) - set(mapping_train_inv):
-            mapping_train_inv[unknown] = max(mapping_train_inv.values()) + 1
-        to_train = np.vectorize(lambda x: mapping_train_inv[x])
+        # Step 1: src index → original event ID
+        to_orig = np.vectorize(lambda x: mapping_src[x])
+        e = to_orig(events.numpy())
+        c = to_orig(context.numpy())
+        # Step 2: original event ID → train index (unknown → NO_EVENT index)
+        to_train = np.vectorize(lambda x: mapping_train_inv.get(x, no_event_idx))
         return torch.Tensor(to_train(e)).to(torch.long), \
                torch.Tensor(to_train(c)).to(torch.long)
 
