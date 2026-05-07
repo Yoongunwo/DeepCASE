@@ -20,6 +20,7 @@ Usage
 """
 
 import argparse
+import gc
 import os
 import re
 import sys
@@ -102,6 +103,12 @@ if __name__ == '__main__':
     parser.add_argument('--benign_log',  default='../Data/BGL/BGL_benign.log')
     parser.add_argument('--anomaly_log', default='../Data/BGL/BGL_anomaly.log')
     parser.add_argument('--model_dir',   default='bgl_model')
+    # Shared preprocessing cache: built once, reused across all ratio experiments.
+    # Storing it next to the log files keeps it independent of --model_dir.
+    parser.add_argument('--cache_path',  default='../Data/BGL/bgl_deepcase_cache.pt',
+                        help='Path for the shared preprocessing cache '
+                             '(built on first run, reused on subsequent runs). '
+                             'Delete this file to force re-preprocessing.')
     parser.add_argument('--ratio',       default=0.8,   type=float,
                         help='Fraction of data used for training (0~1], time-sequential from start')
     parser.add_argument('--context',     default=10,    type=int,
@@ -112,6 +119,11 @@ if __name__ == '__main__':
                         help='Hidden dimension of ContextBuilder')
     parser.add_argument('--epochs',      default=10,    type=int)
     parser.add_argument('--batch_size',  default=128,   type=int)
+    parser.add_argument('--interp_samples', default=100_000, type=int,
+                        help='Max benign samples fed to Interpreter.fit() '
+                             '(KDTree does not need the full training set; '
+                             'set 0 to use all). Caps GPU pool growth during '
+                             'the 100-iter attention optimisation loop.')
     parser.add_argument('--gpu',         default=None,  type=int,
                         help='GPU index (default: auto-select by free memory)')
     args = parser.parse_args()
@@ -119,34 +131,69 @@ if __name__ == '__main__':
     os.makedirs(args.model_dir, exist_ok=True)
     device_str = select_device(args.gpu)
 
-    # ── 1. Parse logs ─────────────────────────────────────────────────────────
-    print('\n[Step 1] Parsing BGL logs...')
-    df_benign  = parse_bgl_log(args.benign_log,  label_value=0)
-    df_anomaly = parse_bgl_log(args.anomaly_log, label_value=1)
-    df_full    = pd.concat([df_benign, df_anomaly], ignore_index=True)
-    df_full    = df_full.sort_values('timestamp').reset_index(drop=True)
-    print(f'  Total  : {len(df_full):,}  '
-          f'(benign={len(df_benign):,}, anomaly={len(df_anomaly):,})')
+    # ── Preprocessing (cached) ────────────────────────────────────────────────
+    # Parsing + Preprocessor runs on the FULL dataset regardless of --ratio.
+    # This is expensive (~10 GB peak RAM for BGL's 4.7 M entries), so we cache
+    # the resulting tensors and skip it on subsequent runs.
+    if os.path.exists(args.cache_path):
+        print(f'\n[Preproc] Loading cached tensors: {args.cache_path}')
+        _cache     = torch.load(args.cache_path, map_location='cpu')
+        events_all = _cache['events_all']
+        context_all= _cache['context_all']
+        labels_all = _cache['labels_all']
+        n_features = _cache['n_features']
+        vocab      = _cache['vocab']
+        dc_mapping = _cache['dc_mapping']
+        del _cache
+        print(f'  n_features : {n_features}   total seqs : {len(events_all):,}')
+    else:
+        # ── 1. Parse logs ─────────────────────────────────────────────────────
+        print('\n[Step 1] Parsing BGL logs...')
+        df_benign  = parse_bgl_log(args.benign_log,  label_value=0)
+        df_anomaly = parse_bgl_log(args.anomaly_log, label_value=1)
+        n_benign, n_anomaly = len(df_benign), len(df_anomaly)
+        df_full    = pd.concat([df_benign, df_anomaly], ignore_index=True)
+        del df_benign, df_anomaly          # free ~2 GB of Python objects
+        gc.collect()
+        df_full = df_full.sort_values('timestamp').reset_index(drop=True)
+        print(f'  Total  : {len(df_full):,}  (benign={n_benign:,}, anomaly={n_anomaly:,})')
 
-    # ── 2. Build string vocabulary ────────────────────────────────────────────
-    print('\n[Step 2] Building vocabulary...')
-    unique_keys      = sorted(df_full['event'].unique())
-    vocab            = {k: i for i, k in enumerate(unique_keys)}
-    df_full['event'] = df_full['event'].map(vocab)
-    print(f'  Vocab size : {len(vocab):,}')
+        # ── 2. Build string vocabulary ─────────────────────────────────────────
+        print('\n[Step 2] Building vocabulary...')
+        unique_keys      = sorted(df_full['event'].unique())
+        vocab            = {k: i for i, k in enumerate(unique_keys)}
+        df_full['event'] = df_full['event'].map(vocab)
+        del unique_keys
+        gc.collect()
+        print(f'  Vocab size : {len(vocab):,}')
 
-    # ── 3. Preprocess → context sequences ─────────────────────────────────────
-    print('\n[Step 3] Building context sequences (Preprocessor)...')
-    preprocessor = Preprocessor(context=args.context, timeout=args.timeout)
-    events_all, context_all, labels_all, dc_mapping = preprocessor.sequence(
-        df_full[['timestamp', 'event', 'machine', 'label']],
-        verbose=True,
-    )
-    n_features = len(dc_mapping)   # includes the NO_EVENT slot
-    print(f'  n_features : {n_features}  (event types + NO_EVENT)')
-    print(f'  Total seqs : {len(events_all):,}')
+        # ── 3. Preprocess → context sequences ─────────────────────────────────
+        print('\n[Step 3] Building context sequences (Preprocessor)...')
+        preprocessor = Preprocessor(context=args.context, timeout=args.timeout)
+        events_all, context_all, labels_all, dc_mapping = preprocessor.sequence(
+            df_full[['timestamp', 'event', 'machine', 'label']],
+            verbose=True,
+        )
+        del df_full, preprocessor
+        gc.collect()
+        n_features = len(dc_mapping)
+        print(f'  n_features : {n_features}  (event types + NO_EVENT)')
+        print(f'  Total seqs : {len(events_all):,}')
 
-    # ── 4. Save preprocessed tensors ──────────────────────────────────────────
+        # ── 4. Save shared cache ───────────────────────────────────────────────
+        print(f'\n[Preproc] Saving cache → {args.cache_path}')
+        torch.save({
+            'events_all'  : events_all,
+            'context_all' : context_all,
+            'labels_all'  : labels_all,
+            'n_features'  : n_features,
+            'context_len' : args.context,
+            'vocab'       : vocab,
+            'dc_mapping'  : dc_mapping,
+        }, args.cache_path)
+        print('  [Saved]')
+
+    # Per-ratio metadata saved alongside the model (for eval script)
     train_size   = int(len(events_all) * args.ratio)
     preproc_path = os.path.join(args.model_dir, 'bgl_preprocessed.pt')
     torch.save({
@@ -159,7 +206,7 @@ if __name__ == '__main__':
         'vocab'       : vocab,
         'dc_mapping'  : dc_mapping,
     }, preproc_path)
-    print(f'\n  [Saved] {preproc_path}')
+    print(f'\n  [Saved] ratio metadata → {preproc_path}')
     print(f'  Train size : {train_size:,}  (ratio={args.ratio:.2f})')
     print(f'  Test  size : {len(events_all) - train_size:,}')
 
@@ -207,10 +254,29 @@ if __name__ == '__main__':
         threshold       = 0.2,
     )
     score = torch.zeros(len(train_events_b), dtype=torch.float)  # all benign → 0
+
+    # Interpreter.fit() calls context_builder.query() with 100 attention-
+    # optimisation iterations per batch.  PyTorch's CUDA allocator pool grows
+    # monotonically across all batches; feeding millions of samples exhausts
+    # GPU memory on the 47 GB cards.  The KDTree only needs a representative
+    # sample, so we cap the input here.
+    n_interp = args.interp_samples
+    if n_interp > 0 and len(train_events_b) > n_interp:
+        idx_interp      = torch.randperm(len(train_events_b))[:n_interp]
+        ctx_interp      = train_context_b[idx_interp]
+        ev_interp       = train_events_b [idx_interp]
+        score_interp    = score          [idx_interp]
+        print(f'  Subsampling {n_interp:,} / {len(train_events_b):,} benign samples '
+              f'for Interpreter (--interp_samples)')
+    else:
+        ctx_interp   = train_context_b
+        ev_interp    = train_events_b
+        score_interp = score
+
     interpreter.fit(
-        X          = train_context_b,
-        y          = train_events_b.unsqueeze(1),
-        score      = score,
+        X          = ctx_interp,
+        y          = ev_interp.unsqueeze(1),
+        score      = score_interp,
         batch_size = args.batch_size,
         verbose    = True,
     )
