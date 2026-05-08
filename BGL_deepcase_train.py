@@ -144,7 +144,7 @@ if __name__ == '__main__':
     # the resulting tensors and skip it on subsequent runs.
     if os.path.exists(args.cache_path):
         print(f'\n[Preproc] Loading cached tensors: {args.cache_path}')
-        _cache     = torch.load(args.cache_path, map_location='cpu')
+        _cache     = torch.load(args.cache_path, map_location='cpu', weights_only=False)
         events_all = _cache['events_all']
         context_all= _cache['context_all']
         labels_all = _cache['labels_all']

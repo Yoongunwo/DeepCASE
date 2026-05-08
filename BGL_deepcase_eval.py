@@ -80,7 +80,7 @@ if __name__ == '__main__':
     # ── Load preprocessed data ────────────────────────────────────────────────
     preproc_path = os.path.join(args.model_dir, 'bgl_preprocessed.pt')
     print(f'\nLoading preprocessed data : {preproc_path}')
-    data = torch.load(preproc_path, map_location='cpu')
+    data = torch.load(preproc_path, map_location='cpu', weights_only=False)
 
     events_all  = data['events_all']
     context_all = data['context_all']
