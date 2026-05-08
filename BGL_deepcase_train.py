@@ -303,9 +303,9 @@ if __name__ == '__main__':
         score_interp = score
 
     interpreter.fit(
-        X          = ctx_interp,
-        y          = ev_interp.unsqueeze(1),
-        score      = score_interp,
+        X          = ctx_interp.to(device_str),
+        y          = ev_interp.unsqueeze(1).to(device_str),
+        score      = score_interp,           # score stays CPU, moved inside fit()
         batch_size = args.batch_size,
         verbose    = True,
     )
