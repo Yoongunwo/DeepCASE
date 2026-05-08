@@ -119,6 +119,13 @@ if __name__ == '__main__':
                         help='Hidden dimension of ContextBuilder')
     parser.add_argument('--epochs',      default=10,    type=int)
     parser.add_argument('--batch_size',  default=128,   type=int)
+    parser.add_argument('--max_vocab',   default=10_000, type=int,
+                        help='Cap vocabulary to top-K most frequent event types; '
+                             'the rest are merged into a single <RARE> token. '
+                             'DecoderEvent has 2×nn.Linear(n_features,n_features): '
+                             'at n_features=47169 that is 2×8.4 GB each (50 GB+ '
+                             'with Adam), impossible on a 47 GB card. '
+                             'Set 0 to disable (only if n_features is already small).')
     parser.add_argument('--interp_samples', default=100_000, type=int,
                         help='Max benign samples fed to Interpreter.fit() '
                              '(KDTree does not need the full training set; '
@@ -192,6 +199,28 @@ if __name__ == '__main__':
             'dc_mapping'  : dc_mapping,
         }, args.cache_path)
         print('  [Saved]')
+
+    # ── Vocabulary pruning ────────────────────────────────────────────────────
+    # DecoderEvent has nn.Linear(n_features, n_features) twice.
+    # At n_features=47169: 2×47169²×4 = 16.8 GB just for model weights,
+    # plus 33.5 GB for Adam m+v — exceeds 47 GB cards even without other data.
+    # Solution: keep top-K events by frequency, merge rest into one RARE token.
+    # NO_EVENT (context padding) has freq=0 in events_all so it also maps to RARE,
+    # which is acceptable (padding treated as "rare event").
+    if args.max_vocab > 0 and n_features > args.max_vocab + 1:
+        print(f'\n[Vocab] Pruning: {n_features:,} → top {args.max_vocab:,} + 1 RARE token')
+        freq    = torch.bincount(events_all, minlength=n_features)
+        k       = min(args.max_vocab, int((freq > 0).sum()))
+        top_ids = torch.topk(freq, k).indices.sort().values
+        remap   = torch.full((n_features,), k, dtype=torch.long)
+        for new_id, old_id in enumerate(top_ids.tolist()):
+            remap[old_id] = new_id
+        events_all  = remap[events_all]
+        context_all = remap[context_all.reshape(-1)].reshape(context_all.shape)
+        n_features  = k + 1
+        print(f'  n_features after pruning : {n_features:,}  '
+              f'(DecoderEvent weights : 2×{n_features}²×4 = '
+              f'{2*n_features**2*4/1024**3:.2f} GB)')
 
     # Per-ratio metadata saved alongside the model (for eval script)
     train_size   = int(len(events_all) * args.ratio)
