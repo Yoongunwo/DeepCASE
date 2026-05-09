@@ -123,8 +123,8 @@ if __name__ == '__main__':
     for start in tqdm(chunks, desc='Chunks', leave=False, disable=(chunk >= n_test)):
         end   = min(start + chunk, n_test)
         preds = interpreter.predict(
-            X          = test_context[start:end],
-            y          = test_events [start:end].unsqueeze(1),
+            X          = test_context[start:end].to(device_str),
+            y          = test_events [start:end].unsqueeze(1).to(device_str),
             k          = args.k,
             batch_size = args.batch_size,
             verbose    = (chunk >= n_test),   # inner progress only when no outer bar
