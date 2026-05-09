@@ -282,7 +282,7 @@ if __name__ == '__main__':
         min_samples     = 5,
         threshold       = 0.2,
     )
-    score = torch.zeros(len(train_events_b), dtype=torch.float)  # all benign → 0
+    score = torch.zeros(len(train_events_b), 1, dtype=torch.float)  # shape (n, 1): all benign → 0
 
     # Interpreter.fit() calls context_builder.query() with 100 attention-
     # optimisation iterations per batch.  PyTorch's CUDA allocator pool grows

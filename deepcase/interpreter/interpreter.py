@@ -215,7 +215,10 @@ class Interpreter(object):
         X, y, inverse_result = unique_2d(X, y)
 
         # Initialise result
-        result = np.full((X.shape[0], self.scores.shape[-1]), -1, dtype=float)
+        # self.scores may be 1D (n_samples,) when trained with scalar scores,
+        # or 2D (n_samples, n_dims).  Normalise to n_dims=1 for the scalar case.
+        n_dims = self.scores.shape[-1] if self.scores.ndim > 1 else 1
+        result = np.full((X.shape[0], n_dims), -1, dtype=float)
 
         # Compute fingerprints
         fingerprints, mask = self.fingerprints_optimized(X, y,
@@ -271,7 +274,7 @@ class Interpreter(object):
             neighbours = self.tree[y].get_arrays()[1][neighbours]
 
             # Initialise result for given y
-            result_ = np.full((fingerprints_.shape[0], self.scores.shape[-1]), -3, dtype=float)
+            result_ = np.full((fingerprints_.shape[0], n_dims), -3, dtype=float)
 
             # Valid results are those closer than epsilon
             valid = distance[:, 0] <= self.eps
@@ -280,7 +283,11 @@ class Interpreter(object):
             # Get valid neighbours
             neighbours = neighbours[:, 0][valid]
             if neighbours.shape[0] > 0:
-                result_[valid] = [self.labels[y][n] for n in neighbours]
+                labels = [self.labels[y][n] for n in neighbours]
+                # scalar labels (1D-score trained models) need wrapping for 2D result_
+                if n_dims == 1 and labels and not isinstance(labels[0], (list, np.ndarray)):
+                    labels = [[l] for l in labels]
+                result_[valid] = labels
 
             # Set result
             result[indices[mask_]] = result_[inverse]
